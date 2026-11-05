@@ -83,10 +83,38 @@ try {
         throw "Azure HTTPS-only configuration failed with exit code $LASTEXITCODE."
     }
 
-    Compress-Archive `
-        -LiteralPath @((Join-Path $PSScriptRoot "app"), (Join-Path $PSScriptRoot "requirements.txt")) `
-        -DestinationPath $zipPath `
-        -Force
+    Add-Type -AssemblyName System.IO.Compression
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $archive = [System.IO.Compression.ZipFile]::Open(
+        $zipPath,
+        [System.IO.Compression.ZipArchiveMode]::Create
+    )
+    try {
+        $entryNames = [System.Collections.Generic.HashSet[string]]::new()
+        $files = @(
+            Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot "app") -File -Recurse |
+                Where-Object { $_.Extension -ne ".pyc" }
+            Get-Item -LiteralPath (Join-Path $PSScriptRoot "requirements.txt")
+        )
+        foreach ($file in $files) {
+            $relativePath = $file.FullName.Substring($PSScriptRoot.Length + 1)
+            $entryName = $relativePath.Replace("\", "/")
+            [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
+                $archive,
+                $file.FullName,
+                $entryName,
+                [System.IO.Compression.CompressionLevel]::Optimal
+            ) | Out-Null
+            [void]$entryNames.Add($entryName)
+        }
+        foreach ($requiredEntry in @("app/main.py", "app/__init__.py", "app/static/index.html", "requirements.txt")) {
+            if (-not $entryNames.Contains($requiredEntry)) {
+                throw "Deployment package is missing required path: $requiredEntry"
+            }
+        }
+    } finally {
+        $archive.Dispose()
+    }
 
     & $az webapp deploy `
         --resource-group $resourceGroup `
